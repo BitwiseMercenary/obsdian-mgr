@@ -54,10 +54,13 @@ resolve_arch() {
 }
 
 # Latest tag like "v1.12.7" from the GitHub API (no jq dependency).
+# Capture the body first, then parse it. Piping `curl | grep -m1` lets grep
+# close the pipe as soon as it matches, which makes curl die with a write error
+# (exit 23) under `set -o pipefail` whenever the body is still streaming.
 latest_tag() {
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -m1 '"tag_name"' \
-    | grep -o 'v[0-9][^"]*'
+  local json
+  json="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")" || return 1
+  printf '%s\n' "$json" | grep -m1 '"tag_name"' | grep -o 'v[0-9][^"]*'
 }
 
 # Installed version string, or empty if not installed.
