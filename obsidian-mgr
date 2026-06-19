@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# obsidian-mgr — install / update / uninstall Obsidian on Debian/Ubuntu
+# using the official .deb from GitHub releases (Obsidian publishes no apt repo).
+#
+# Usage:  obsidian-mgr {install|update [--force]|uninstall|status}
+#
+set -euo pipefail
+
+# ============================================================================
+#  Configuration — adjust these for your machine / fork, then save.
+# ============================================================================
+
+# GitHub "owner/repo" that publishes the release assets.
+REPO="obsidianmd/obsidian-releases"
+
+# Debian package name (used by `dpkg-query` and `apt remove`).
+PKG="obsidian"
+
+# Target architecture for the .deb.
+#   Leave empty ""  -> auto-detect via dpkg (recommended).
+#   Set explicitly  -> e.g. "amd64" or "arm64" to override auto-detection.
+ARCH=""
+
+# Filename of the .deb asset inside a release. These placeholders are
+# substituted at runtime:
+#   {version} -> release version without the leading "v"  (e.g. 1.12.7)
+#   {arch}    -> resolved architecture                    (e.g. amd64)
+DEB_ASSET="obsidian_{version}_{arch}.deb"
+
+# Command used to gain root for apt operations.
+#   "sudo"  (default)  |  "doas"  |  ""  (empty, if you already run as root)
+SUDO="sudo"
+
+# ============================================================================
+#  End of configuration — you shouldn't need to edit below here.
+# ============================================================================
+
+TMP_DEB="$(mktemp --suffix=.deb)"
+cleanup() { rm -f "$TMP_DEB"; }
+trap cleanup EXIT
+
+info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || err "missing required command: $1"; }
+
+resolve_arch() {
+  if [ -n "$ARCH" ]; then echo "$ARCH"; return; fi
+  case "$(dpkg --print-architecture)" in
+    amd64) echo amd64 ;;
+    arm64) echo arm64 ;;
+    *) err "could not auto-detect a supported arch ($(dpkg --print-architecture)); set ARCH at the top of the script" ;;
+  esac
+}
+
+# Latest tag like "v1.12.7" from the GitHub API (no jq dependency).
+latest_tag() {
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep -m1 '"tag_name"' \
+    | grep -o 'v[0-9][^"]*'
+}
+
+# Installed version string, or empty if not installed.
+installed_version() {
+  dpkg-query -W -f='${Version}' "$PKG" 2>/dev/null || true
+}
+
+# Run apt with the configured privilege escalation (handles SUDO="").
+apt_root() {
+  if [ -n "$SUDO" ]; then "$SUDO" apt-get "$@"; else apt-get "$@"; fi
+}
+
+cmd_install() {
+  local force="${1:-}"
+  need curl; need dpkg
+  [ -z "$SUDO" ] || need "$SUDO"
+
+  local tag version installed arch asset url
+  tag="$(latest_tag)" || err "could not query GitHub (network / rate limit?)"
+  [ -n "$tag" ] || err "could not parse latest version from GitHub API"
+  version="${tag#v}"
+  installed="$(installed_version)"
+
+  if [ "$installed" = "$version" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
+    info "Obsidian $version is already installed and up to date. (use --force to reinstall)"
+    return 0
+  fi
+
+  if [ -n "$installed" ]; then
+    info "Updating Obsidian $installed -> $version"
+  else
+    info "Installing Obsidian $version"
+  fi
+
+  arch="$(resolve_arch)"
+  asset="${DEB_ASSET//\{version\}/$version}"
+  asset="${asset//\{arch\}/$arch}"
+  url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
+
+  info "Downloading $url"
+  curl -fL --progress-bar -o "$TMP_DEB" "$url" || err "download failed"
+
+  info "Installing — root password may be required"
+  apt_root install -y "$TMP_DEB"
+  info "Done. Installed version: $(installed_version)"
+}
+
+cmd_uninstall() {
+  need dpkg
+  [ -z "$SUDO" ] || need "$SUDO"
+  [ -n "$(installed_version)" ] || { info "$PKG is not installed."; return 0; }
+  info "Removing $PKG — root password may be required"
+  apt_root remove -y "$PKG"
+  info "Removed. Your vaults and config in \$HOME are left untouched."
+}
+
+cmd_status() {
+  need dpkg
+  local installed tag
+  installed="$(installed_version)"
+  info "Installed: ${installed:-none}"
+  if command -v curl >/dev/null 2>&1; then
+    tag="$(latest_tag 2>/dev/null || true)"
+    if [ -n "$tag" ]; then info "Latest:    ${tag#v}"; else info "Latest:    unknown (network / rate limit?)"; fi
+  fi
+}
+
+case "${1:-}" in
+  install|update) cmd_install "${2:-}" ;;
+  uninstall|remove) cmd_uninstall ;;
+  status|version) cmd_status ;;
+  *)
+    cat <<EOF
+obsidian-mgr — manage Obsidian via the official .deb (no apt repo exists)
+
+Usage: $(basename "$0") <command>
+
+  install [--force]   Install, or update to the latest release
+  update  [--force]   Alias for install
+  uninstall           Remove the package (keeps your vaults/config)
+  status              Show installed vs. latest available version
+
+Configuration (REPO, ARCH, SUDO, ...) lives at the top of this script.
+EOF
+    [ -z "${1:-}" ] && exit 0 || exit 1 ;;
+esac

@@ -1,0 +1,7 @@
+# Downloaded packages (the script uses a temp file, but just in case)
+*.deb
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
