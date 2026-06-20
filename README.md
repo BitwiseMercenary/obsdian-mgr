@@ -13,7 +13,7 @@ Obsidian does **not** publish an apt repository, so `apt upgrade` will never upd
 ## Install
 
 ```bash
-curl -fLo obsidian-mgr https://raw.githubusercontent.com/<you>/obsidian-mgr/main/obsidian-mgr
+curl -fLo obsidian-mgr https://raw.githubusercontent.com/BitwiseMercenary/obsdian-mgr/master/obsidian-mgr
 chmod +x obsidian-mgr
 ./obsidian-mgr install
 ```
