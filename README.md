@@ -31,10 +31,11 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 obsidian-mgr <command>
 
-  install [--force]   Install, or update to the latest release
-  update  [--force]   Alias for install
-  uninstall           Remove the package (keeps your vaults/config)
-  status              Show installed vs. latest available version
+  install [--force] [version]   Install, or update to the latest release;
+                                pass a version (e.g. 1.8.10) to target it exactly
+  update  [--force] [version]   Alias for install
+  uninstall                     Remove the package (keeps your vaults/config)
+  status                        Show installed vs. latest available version
 ```
 
 | Command | What it does |
@@ -42,8 +43,14 @@ obsidian-mgr <command>
 | `obsidian-mgr install` | Installs the latest release, or **no-ops if already current** |
 | `obsidian-mgr update` | Same as `install`; run it whenever to upgrade |
 | `obsidian-mgr install --force` | Reinstall even when already up to date |
+| `obsidian-mgr install 1.8.10` | Installs that exact release (`v` prefix and `--version 1.8.10` also accepted) |
+| `obsidian-mgr install 1.8.10 --force` | Reinstall a pinned version even when already current |
 | `obsidian-mgr uninstall` | `apt remove` the package — your vaults and config in `$HOME` are left untouched |
 | `obsidian-mgr status` | Prints installed version vs. latest available |
+
+Pinning a version resolves the GitHub release tag `v<version>`, so an unknown version fails
+before anything is downloaded. If the pinned version is older than what's installed, the
+script says so and passes `--allow-downgrades` to `apt-get`.
 
 ## Configuration
 

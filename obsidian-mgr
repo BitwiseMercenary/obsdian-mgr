@@ -3,7 +3,7 @@
 # obsidian-mgr — install / update / uninstall Obsidian on Debian/Ubuntu
 # using the official .deb from GitHub releases (Obsidian publishes no apt repo).
 #
-# Usage:  obsidian-mgr {install|update [--force]|uninstall|status}
+# Usage:  obsidian-mgr {install|update [--force] [version]|uninstall|status}
 #
 set -euo pipefail
 
@@ -63,6 +63,19 @@ latest_tag() {
   printf '%s\n' "$json" | grep -m1 '"tag_name"' | grep -o 'v[0-9][^"]*'
 }
 
+# Exit 0 if a release with the given tag exists, 1 if GitHub says it does not,
+# 2 if the answer could not be determined (network error / rate limit).
+release_exists() {
+  local code
+  code="$(curl -sSL -o /dev/null -w '%{http_code}' \
+    "https://api.github.com/repos/${REPO}/releases/tags/$1" 2>/dev/null)" || return 2
+  case "$code" in
+    200) return 0 ;;
+    404) return 1 ;;
+    *)   return 2 ;;
+  esac
+}
+
 # Installed version string, or empty if not installed.
 installed_version() {
   dpkg-query -W -f='${Version}' "$PKG" 2>/dev/null || true
@@ -74,25 +87,58 @@ apt_root() {
 }
 
 cmd_install() {
-  local force="${1:-}"
   need curl; need dpkg
   [ -z "$SUDO" ] || need "$SUDO"
 
-  local tag version installed arch asset url
-  tag="$(latest_tag)" || err "could not query GitHub (network / rate limit?)"
-  [ -n "$tag" ] || err "could not parse latest version from GitHub API"
-  version="${tag#v}"
+  local force="" want=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force|-f)   force=1 ;;
+      --version|-V) shift; [ "$#" -gt 0 ] || err "--version requires a value"; want="$1" ;;
+      --version=*)  want="${1#--version=}" ;;
+      -?*)          err "unknown option: $1 (usage: install [--force] [version])" ;;
+      "")           ;;
+      *)            [ -z "$want" ] || err "only one version may be given (got '$want' and '$1')"
+                    want="$1" ;;
+    esac
+    shift
+  done
+
+  local tag version installed arch asset url rc downgrade=""
+  local -a apt_args=(install -y)
+
+  if [ -n "$want" ]; then
+    version="${want#v}"
+    case "$version" in
+      [0-9]*) ;;
+      *) err "'$want' does not look like a version (expected e.g. 1.12.7)" ;;
+    esac
+    tag="v${version}"
+    rc=0; release_exists "$tag" || rc=$?
+    [ "$rc" -ne 1 ] || err "no release tagged $tag in ${REPO} — see https://github.com/${REPO}/releases"
+    [ "$rc" -eq 0 ] || err "could not verify $tag on GitHub (network / rate limit?)"
+  else
+    tag="$(latest_tag)" || err "could not query GitHub (network / rate limit?)"
+    [ -n "$tag" ] || err "could not parse latest version from GitHub API"
+    version="${tag#v}"
+  fi
+
   installed="$(installed_version)"
 
-  if [ "$installed" = "$version" ] && [ "$force" != "--force" ] && [ "$force" != "-f" ]; then
-    info "Obsidian $version is already installed and up to date. (use --force to reinstall)"
+  if [ "$installed" = "$version" ] && [ -z "$force" ]; then
+    info "Obsidian $version is already installed. (use --force to reinstall)"
     return 0
   fi
 
-  if [ -n "$installed" ]; then
-    info "Updating Obsidian $installed -> $version"
-  else
+  if [ -z "$installed" ]; then
     info "Installing Obsidian $version"
+  elif [ "$installed" = "$version" ]; then
+    info "Reinstalling Obsidian $version"
+  elif dpkg --compare-versions "$version" lt "$installed"; then
+    info "Downgrading Obsidian $installed -> $version"
+    downgrade=1
+  else
+    info "Updating Obsidian $installed -> $version"
   fi
 
   arch="$(resolve_arch)"
@@ -101,10 +147,12 @@ cmd_install() {
   url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 
   info "Downloading $url"
-  curl -fL --progress-bar -o "$TMP_DEB" "$url" || err "download failed"
+  curl -fL --progress-bar -o "$TMP_DEB" "$url" \
+    || err "download failed — is '$asset' published under $tag?"
 
+  [ -z "$downgrade" ] || apt_args+=(--allow-downgrades)
   info "Installing — root password may be required"
-  apt_root install -y "$TMP_DEB"
+  apt_root "${apt_args[@]}" "$TMP_DEB"
   info "Done. Installed version: $(installed_version)"
 }
 
@@ -129,7 +177,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  install|update) cmd_install "${2:-}" ;;
+  install|update) shift; cmd_install "$@" ;;
   uninstall|remove) cmd_uninstall ;;
   status|version) cmd_status ;;
   *)
@@ -138,10 +186,15 @@ obsidian-mgr — manage Obsidian via the official .deb (no apt repo exists)
 
 Usage: $(basename "$0") <command>
 
-  install [--force]   Install, or update to the latest release
-  update  [--force]   Alias for install
-  uninstall           Remove the package (keeps your vaults/config)
-  status              Show installed vs. latest available version
+  install [--force] [version]   Install/update; pins to <version> when given
+  update  [--force] [version]   Alias for install
+  uninstall                     Remove the package (keeps your vaults/config)
+  status                        Show installed vs. latest available version
+
+Examples:
+  $(basename "$0") install            # latest release
+  $(basename "$0") install 1.8.10     # that exact release (downgrades if needed)
+  $(basename "$0") install --force    # reinstall the latest release
 
 Configuration (REPO, ARCH, SUDO, ...) lives at the top of this script.
 EOF
